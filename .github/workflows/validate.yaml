@@ -22,8 +22,6 @@ jobs:
         working-directory: frontend
       - run: python -m compileall -q backend/app
       - run: |
-          helm lint charts/paddleocr-app
           helm lint charts/paddleocr-vl-hps
-          helm template paddleocr-app charts/paddleocr-app -f examples/app-values.yaml > /dev/null
           helm template paddleocr-hps charts/paddleocr-vl-hps -f examples/l40s-values.yaml > /dev/null
           for script in scripts/*.sh; do bash -n "$script"; done

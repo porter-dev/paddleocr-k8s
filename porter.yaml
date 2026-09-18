@@ -1,0 +1,45 @@
+version: v2
+name: paddleocr
+services:
+- name: web
+  run: ""
+  type: web
+  instances: 1
+  cpuCores: 2
+  ramMegabytes: 2048
+  terminationGracePeriodSeconds: 600
+  port: 8080
+  healthCheck:
+    enabled: true
+    httpPath: /api/readyz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  metricsScraping:
+    enabled: true
+    port: 8080
+    path: /api/metrics
+    scrapeIntervalSeconds: 15
+  # Configure an AWS role with access to your S3 bucket through Porter.
+build:
+  context: .
+  method: docker
+  dockerfile: Dockerfile
+env:
+- key: PADDLEOCR_URL
+  value: http://paddleocr-hps.paddleocr.svc.cluster.local:8080
+- key: S3_BUCKET
+  value: replace-with-your-bucket
+- key: S3_PREFIX
+  value: paddleocr-app
+- key: AWS_REGION
+  value: us-east-1
+- key: DEFAULT_CHUNK_PAGES
+  value: "50"
+- key: DEFAULT_CONCURRENCY
+  value: "2"
+- key: RESTRUCTURE_PAGES
+  value: "true"
+- key: DRAIN_TIMEOUT_SECONDS
+  value: "540"
+- key: JOB_CONCURRENCY
+  value: "4"
