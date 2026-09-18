@@ -1,0 +1,35 @@
+# g6.xlarge (4 vCPU, 16 GiB RAM, same L4): two pipeline instances. vLLM's resident size is
+# 4 to 5.5 GB even with swap-space 0, so its limit must be 8 GiB or it is OOM-killed under
+# load. RAM: vLLM ~5.5 + 2 × ~3 + Triton ~0.5 + gateway ~0.3 ≈ 12.3 of 14.6 GiB allocatable.
+# CPU is contended during simultaneous render bursts; expect lower throughput than a 2xlarge.
+gateway:
+  uvicornWorkers: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+pipeline:
+  instances: 2
+  resources:
+    requests:
+      cpu: "1500m"
+      memory: 6Gi
+    limits:
+      memory: 8Gi
+vlm:
+  resources:
+    requests:
+      cpu: "1"
+      memory: 4Gi
+    limits:
+      memory: 8Gi
+      nvidia.com/gpu: 1
+  backendConfig:
+    gpu-memory-utilization: 0.42
+    max-num-batched-tokens: 8192
+    max-num-seqs: 256
+    mm-processor-cache-gb: 0
+    swap-space: 0
+shmSize: 2Gi

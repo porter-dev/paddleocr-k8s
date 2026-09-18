@@ -1,0 +1,120 @@
+# pipeline_config.yaml is the upstream deploy/paddleocr_vl_docker/pipeline_config_vllm.yaml
+# with the VLM server URL pointed at the vlm container over localhost and the
+# tunable fields lifted into values.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "paddleocr-vl-hps.name" . }}
+  labels:
+    {{- include "paddleocr-vl-hps.labels" . | nindent 4 }}
+data:
+  pipeline_config.yaml: |
+    pipeline_name: PaddleOCR-VL-1.6
+
+    batch_size: {{ .Values.pipeline.config.batchSize }}
+    layout_prep_cpu_workers: {{ .Values.pipeline.config.layoutPrepCpuWorkers }}
+
+    use_queues: True
+
+    use_doc_preprocessor: {{ ternary "True" "False" .Values.pipeline.config.useDocPreprocessor }}
+    use_layout_detection: True
+    use_chart_recognition: {{ ternary "True" "False" .Values.pipeline.config.useChartRecognition }}
+    use_seal_recognition: {{ ternary "True" "False" .Values.pipeline.config.useSealRecognition }}
+    format_block_content: False
+    merge_layout_blocks: True
+    markdown_ignore_labels:
+      - number
+      - footnote
+      - header
+      - header_image
+      - footer
+      - footer_image
+      - aside_text
+
+    SubModules:
+      LayoutDetection:
+        module_name: layout_detection
+        model_name: PP-DocLayoutV3
+        model_dir: null
+        batch_size: 8
+        threshold: 0.3
+        layout_nms: True
+        layout_unclip_ratio: [1.0, 1.0]
+        layout_merge_bboxes_mode:
+          0: "union"
+          1: "union"
+          2: "union"
+          3: "large"
+          4: "union"
+          5: "large"
+          6: "large"
+          7: "union"
+          8: "union"
+          9: "union"
+          10: "union"
+          11: "union"
+          12: "union"
+          13: "union"
+          14: "union"
+          15: "large"
+          16: "union"
+          17: "large"
+          18: "union"
+          19: "union"
+          20: "union"
+          21: "union"
+          22: "union"
+          23: "union"
+          24: "union"
+      VLRecognition:
+        module_name: vl_recognition
+        model_name: {{ .Values.vlm.modelName }}
+        model_dir: null
+        batch_size: 4096
+        genai_config:
+          backend: vllm-server
+          server_url: http://localhost:{{ .Values.vlm.port }}/v1
+          max_concurrency: {{ .Values.pipeline.config.vlmMaxConcurrency }}
+
+    SubPipelines:
+      DocPreprocessor:
+        pipeline_name: doc_preprocessor
+        batch_size: 8
+        use_doc_orientation_classify: True
+        use_doc_unwarping: True
+        SubModules:
+          DocOrientationClassify:
+            module_name: doc_text_orientation
+            model_name: PP-LCNet_x1_0_doc_ori
+            model_dir: null
+            batch_size: 8
+          DocUnwarping:
+            module_name: image_unwarping
+            model_name: UVDoc
+            model_dir: null
+
+    Serving:
+      visualize: False
+      extra:
+        max_num_input_imgs: {{ default "null" .Values.pipeline.config.maxNumInputImgs }}
+
+  vllm_config.yaml: |
+    {{- toYaml .Values.vlm.backendConfig | nindent 4 }}
+
+  # Triton model config for the layout-parsing model. server.sh copies the model repo and
+  # keeps a config.pbtxt when present, so this replaces the SDK's config_gpu.pbtxt.
+  layout-parsing.config.pbtxt: |
+    backend: "python"
+    max_batch_size: {{ .Values.pipeline.maxBatchSize }}
+    input [ { name: "input", data_type: TYPE_STRING, dims: [ -1 ] } ]
+    output [ { name: "output", data_type: TYPE_STRING, dims: [ -1 ] } ]
+    instance_group [ { count: {{ .Values.pipeline.instances }}, kind: KIND_GPU, gpus: [ 0 ] } ]
+    dynamic_batching { max_queue_delay_microseconds: {{ mul .Values.pipeline.batchQueueDelayMs 1000 }} }
+  {{- if .Values.pipeline.benchmarkProfiling }}
+  benchmark-profile.py: |
+    {{- .Files.Get "files/benchmark-profile.py" | nindent 4 }}
+  {{- end }}
+  {{- if .Values.vlm.benchmarkRuntimePatch }}
+  benchmark-vlm-patch.py: |
+    {{- .Files.Get "files/benchmark-vlm-patch.py" | nindent 4 }}
+  {{- end }}

@@ -1,0 +1,58 @@
+# Apply after the base chart values. Provide registry and vlm.imageRef at install time.
+# This profile requires a validated patched vLLM image with encoder graph support.
+replicas: 3
+instanceTypes: [g6e.2xlarge]
+allowedInstanceFamilies: [g6e]
+nodeGroupId: "" # Optional Porter GPU node group ID.
+pipeline:
+  instances: 6
+  maxBatchSize: 8
+  batchQueueDelayMs: 500
+  config:
+    vlmMaxConcurrency: 64
+  resources:
+    requests: {cpu: "4", memory: 30Gi}
+    limits: {memory: 32Gi}
+gateway:
+  maxConcurrentInferenceRequests: 64
+  inferenceTimeoutSeconds: 900
+  resources:
+    requests: {cpu: 500m, memory: 6Gi}
+    limits: {memory: 8Gi}
+vlm:
+  imageRef: example.invalid/paddleocr/vllm:patched
+  command: [vllm, serve]
+  args:
+    - PaddlePaddle/PaddleOCR-VL-1.6
+    - --served-model-name
+    - PaddleOCR-VL-1.6-0.9B
+    - --host
+    - 0.0.0.0
+    - --port
+    - "8118"
+    - --trust-remote-code
+    - --gpu-memory-utilization
+    - "0.28"
+    - --max-num-batched-tokens
+    - "8192"
+    - --max-num-seqs
+    - "128"
+    - --max-model-len
+    - "16384"
+    - --mm-processor-cache-gb
+    - "0"
+    - --limit-mm-per-prompt
+    - '{"image":1}'
+    - -cc.cudagraph_mm_encoder=true
+    - --mm-encoder-attn-backend
+    - FLASH_ATTN
+  resources:
+    requests: {cpu: "2", memory: 8Gi}
+    limits: {memory: 16Gi, nvidia.com/gpu: 1}
+  startupTimeoutSeconds: 1200
+terminationGracePeriodSeconds: 1200
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 6
+  pagesPerReplica: 2400

@@ -1,0 +1,133 @@
+# Images built from the PaddleOCR repo's deploy/paddleocr_vl_docker/hps and mirrored into ECR.
+registry: example.invalid/paddleocr
+imagePullSecrets: []
+
+# VRAM budget on an L4 (22.03 GiB usable), all numbers measured on fir-fir:
+#   vLLM at gpu-memory-utilization 0.42            9.25 GiB
+#     = weights 1.82 + activation peak ~2.2 (at 8192 batched tokens; 4.33 at 16384)
+#       + CUDA graphs 0.3 + KV cache ~4.9 (~290k tokens; peak observed use was 38k)
+#   pipeline instances 3 x 3.9 GiB                11.7 GiB
+#   Triton server process CUDA context            ~0.3 GiB
+#   total                                         ~21.3 GiB, ~0.7 GiB slack
+# RAM (30.6 GiB allocatable): vLLM ~6 + 3 x 3.5 + Triton ~1 + gateway ~1 = ~18.5 GiB.
+# CPU (7.9 allocatable): vLLM ~1.2 + 3 x ~1.0 bursty + gateway ~0.5.
+
+gateway:
+  image: paddleocr-hps-gateway
+  tag: paddlex3.6-sdk0.1.1
+  # Requests admitted into Triton at once. Triton queues the rest; with instances × dynamic
+  # batching this should exceed pipeline.instances so no instance idles.
+  maxConcurrentInferenceRequests: 16
+  maxConcurrentNonInferenceRequests: 64
+  inferenceTimeoutSeconds: 600
+  uvicornWorkers: 4
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
+pipeline:
+  # Opt-in stage timings in pipeline logs (PADDLE_BENCH JSON); disabled in normal serving.
+  benchmarkProfiling: false
+  image: paddleocr-hps-pipeline
+  tag: paddlex3.6-gpu-sdk0.1.0-bundled
+  # Parallel pipeline processes inside Triton (instance_group.count). Each holds its own
+  # layout predictor: ~3.9 GiB VRAM, ~3.5 GiB RAM, ~1 core while active.
+  instances: 3
+  # Triton dynamic batching of layout-parsing requests per instance execution.
+  maxBatchSize: 8
+  # How long Triton waits to gather several requests into one call to the pipeline, which
+  # runs them as one multi-page job. 0 removes the collection delay but can still batch queued requests.
+  batchQueueDelayMs: 0
+  gpuMode: shared
+  # Environment for the Triton container and, by inheritance, every pipeline instance.
+  # Paddle flags go here, e.g. FLAGS_gpu_memory_limit_mb to cap each instance's allocator
+  # (an instance otherwise grows to ~4 GiB of VRAM, mostly allocator cache).
+  extraEnv: {}
+  resources:
+    requests:
+      cpu: "2"
+      memory: 12Gi
+    limits:
+      memory: 16Gi
+  config:
+    batchSize: 8
+    vlmMaxConcurrency: 64
+    layoutPrepCpuWorkers: 0
+    maxNumInputImgs: null
+    useDocPreprocessor: false
+    useChartRecognition: false
+    useSealRecognition: false
+
+vlm:
+  # Diagnostic interventions for the pinned stock model; empty leaves its source intact.
+  benchmarkRuntimePatch: ""
+  securityContext: {}
+  image: paddleocr-genai-vllm-server
+  tag: paddleocr3.6-nvidia-gpu-offline
+  # Set imageRef and args to run a stock vLLM image with its native PaddleOCR-VL model
+  # instead of PaddleX's genai_server wrapper (see values-stock-vllm.yaml).
+  imageRef: ""
+  command: []
+  args: []
+  modelName: PaddleOCR-VL-1.6-0.9B
+  port: 8118
+  resources:
+    requests:
+      cpu: "1500m"
+      memory: 7Gi
+    limits:
+      memory: 9Gi
+      nvidia.com/gpu: 1
+  # Environment for the vLLM container, e.g. OMP_NUM_THREADS (vLLM forces torch to one CPU
+  # thread by default).
+  extraEnv: {}
+  backendConfig:
+    gpu-memory-utilization: 0.42
+    max-num-batched-tokens: 8192
+    max-num-seqs: 256
+    mm-processor-cache-gb: 0
+  startupTimeoutSeconds: 900
+
+# /dev/shm for both GPU containers. Triton's Python backend passes tensors through shm.
+shmSize: 4Gi
+
+service:
+  type: ClusterIP
+  port: 8080
+
+nodeGroupId: ""
+allowedInstanceFamilies: [g5, g6, g6e, gr6]
+# Exact instance types to allow, e.g. [g6.2xlarge]. Karpenter provisions only these; empty
+# leaves the choice to Karpenter within the families above.
+instanceTypes: []
+nodeSelector: {}
+tolerations:
+- key: nvidia.com/gpu
+  operator: Exists
+  effect: NoSchedule
+
+replicas: 1
+terminationGracePeriodSeconds: 900
+
+podDisruptionBudget:
+  enabled: true
+
+# KEDA ScaledObject on the app's backlog metric (see the app's /api/metrics). Requires KEDA
+# and a Prometheus that scrapes the app. maxReplicas is bounded by GPU quota and node pool
+# limits, not by this chart.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 4
+  pagesPerReplica: 400
+  pollingIntervalSeconds: 15
+  prometheusUrl: http://prometheus-server.monitoring.svc.cluster.local:80
+  query: sum(max by (k8s_pod_name) (paddleocr_pending_pages))
+  scaleUp:
+    podsPerMinute: 2
+  scaleDown:
+    stabilizationSeconds: 900
+    secondsPerPod: 300

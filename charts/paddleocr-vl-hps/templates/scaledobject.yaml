@@ -1,0 +1,44 @@
+{{- if .Values.autoscaling.enabled }}
+# Scales the OCR pods on backlog, not utilisation: a saturated pod shows ~60% GPU and one
+# busy core, so the honest signal is pages accepted by the app but not yet recognised.
+# replicas = ceil(pending pages / pagesPerReplica). Scale-up is quick; scale-down is slow
+# because a fresh pod takes ~10 minutes (node, 15 GB of images, vLLM warm-up).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "paddleocr-vl-hps.name" . }}
+  labels:
+    {{- include "paddleocr-vl-hps.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "paddleocr-vl-hps.name" . }}
+  minReplicaCount: {{ .Values.autoscaling.minReplicas }}
+  maxReplicaCount: {{ .Values.autoscaling.maxReplicas }}
+  pollingInterval: {{ .Values.autoscaling.pollingIntervalSeconds }}
+  cooldownPeriod: {{ .Values.autoscaling.scaleDown.stabilizationSeconds }}
+  fallback:
+    failureThreshold: 6
+    replicas: {{ .Values.autoscaling.minReplicas }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+          - type: Pods
+            value: {{ .Values.autoscaling.scaleUp.podsPerMinute }}
+            periodSeconds: 60
+        scaleDown:
+          stabilizationWindowSeconds: {{ .Values.autoscaling.scaleDown.stabilizationSeconds }}
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: {{ .Values.autoscaling.scaleDown.secondsPerPod }}
+  triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: {{ .Values.autoscaling.prometheusUrl | quote }}
+      query: {{ .Values.autoscaling.query | quote }}
+      threshold: {{ .Values.autoscaling.pagesPerReplica | quote }}
+      activationThreshold: "1"
+{{- end }}

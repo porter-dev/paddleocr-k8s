@@ -1,0 +1,7 @@
+PaddleOCR on Kubernetes
+Copyright 2026 Porter contributors.
+
+This repository integrates PaddleOCR, PaddleX and vLLM. Upstream code and
+artifacts retain their original copyright notices and licenses. The build scripts
+fetch upstream images and SDKs; those artifacts and model weights are not included
+in this repository and have their own license terms.

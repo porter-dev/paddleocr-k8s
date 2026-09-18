@@ -1,0 +1,14 @@
+node_modules/
+frontend/dist/
+backend/app/static/
+__pycache__/
+*.pyc
+.venv/
+.env
+.env.*
+.values*.yaml
+!.values.example.yaml
+.DS_Store
+benchmarks/
+data/
+*.log

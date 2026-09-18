@@ -1,0 +1,235 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "paddleocr-vl-hps.name" . }}
+  labels:
+    {{- include "paddleocr-vl-hps.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicas }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "paddleocr-vl-hps.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "paddleocr-vl-hps.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        # Karpenter must not consolidate a node out from under a pod mid-request; the
+        # autoscaler removes pods, Karpenter then removes the empty node.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      # Long enough for the gateway to finish the requests it holds when a pod is removed.
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      nodeSelector:
+        {{- if .Values.nodeGroupId }}
+        porter.run/node-group-id: {{ .Values.nodeGroupId | quote }}
+        {{- end }}
+        {{- with .Values.nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or .Values.allowedInstanceFamilies .Values.instanceTypes }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              {{- with .Values.instanceTypes }}
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values:
+                  {{- toYaml . | nindent 18 }}
+              {{- end }}
+              {{- with .Values.allowedInstanceFamilies }}
+              - key: karpenter.k8s.aws/instance-family
+                operator: In
+                values:
+                  {{- toYaml . | nindent 18 }}
+              {{- end }}
+      {{- end }}
+      tolerations:
+      {{- if .Values.nodeGroupId }}
+      - key: porter.run/node-group-id
+        operator: Equal
+        value: {{ .Values.nodeGroupId | quote }}
+        effect: NoSchedule
+      {{- end }}
+      {{- with .Values.tolerations }}
+        {{- toYaml . | nindent 6 }}
+      {{- end }}
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "paddleocr-vl-hps.name" . }}
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: {{ .Values.shmSize }}
+      - name: hf-cache
+        emptyDir: {}
+      # vLLM and Triton run as native sidecars, in that order: vLLM must pass its startup probe
+      # before Triton launches (started together, vLLM misattributes the Triton instances' GPU
+      # allocations to its own profiling and fails with "No available memory for the cache
+      # blocks"), and on termination Kubernetes stops the gateway first, then Triton, then vLLM.
+      initContainers:
+      - name: vlm
+        restartPolicy: Always
+        {{- with .Values.vlm.securityContext }}
+        securityContext:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        image: {{ default (printf "%s/%s:%s" .Values.registry .Values.vlm.image .Values.vlm.tag) .Values.vlm.imageRef }}
+        {{- if .Values.vlm.benchmarkRuntimePatch }}
+        command: ["/bin/bash", "-ec"]
+        args:
+        - |
+          python3 /config/benchmark-vlm-patch.py {{ .Values.vlm.benchmarkRuntimePatch | squote }}
+          exec {{ range concat .Values.vlm.command .Values.vlm.args }}{{ . | squote }} {{ end }}
+        {{- else }}
+        {{- with .Values.vlm.command }}
+        command:
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.vlm.args }}
+        args:
+          {{- toYaml .Values.vlm.args | nindent 8 }}
+        {{- else }}
+        args:
+        - paddleocr
+        - genai_server
+        - --model_name
+        - {{ .Values.vlm.modelName }}
+        - --host
+        - 0.0.0.0
+        - --port
+        - {{ .Values.vlm.port | quote }}
+        - --backend
+        - vllm
+        - --backend_config
+        - /config/vllm_config.yaml
+        {{- end }}
+        {{- end }}
+        {{- with .Values.vlm.extraEnv }}
+        env:
+        {{- range $k, $v := . }}
+        - name: {{ $k }}
+          value: {{ $v | quote }}
+        {{- end }}
+        {{- end }}
+        ports:
+        - name: vlm
+          containerPort: {{ .Values.vlm.port }}
+        volumeMounts:
+        - name: config
+          mountPath: /config
+          readOnly: true
+        - name: shm
+          mountPath: /dev/shm
+        - name: hf-cache
+          mountPath: /root/.cache/huggingface
+        startupProbe:
+          httpGet:
+            path: /health
+            port: vlm
+          periodSeconds: 10
+          failureThreshold: {{ div .Values.vlm.startupTimeoutSeconds 10 }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: vlm
+          periodSeconds: 10
+        resources:
+          {{- toYaml .Values.vlm.resources | nindent 10 }}
+      - name: pipeline
+        restartPolicy: Always
+        image: {{ .Values.registry }}/{{ .Values.pipeline.image }}:{{ .Values.pipeline.tag }}
+        {{- if .Values.pipeline.benchmarkProfiling }}
+        command: ["/bin/bash", "-ec"]
+        args:
+        - |
+          cat /config/benchmark-profile.py >> /app/model_repo/layout-parsing/1/model.py
+          exec /app/server.sh
+        {{- end }}
+        env:
+        - name: PADDLEX_HPS_PIPELINE_CONFIG_PATH
+          value: /config/pipeline_config.yaml
+        - name: PADDLEX_HPS_DEVICE_TYPE
+          value: gpu
+        {{- range $k, $v := .Values.pipeline.extraEnv }}
+        - name: {{ $k }}
+          value: {{ $v | quote }}
+        {{- end }}
+        {{- if eq .Values.pipeline.gpuMode "shared" }}
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: compute,utility
+        {{- end }}
+        ports:
+        - name: triton-http
+          containerPort: 8000
+        - name: triton-grpc
+          containerPort: 8001
+        - name: triton-metrics
+          containerPort: 8002
+        volumeMounts:
+        - name: config
+          mountPath: /config
+          readOnly: true
+        - name: config
+          mountPath: /app/model_repo/layout-parsing/config.pbtxt
+          subPath: layout-parsing.config.pbtxt
+          readOnly: true
+        - name: shm
+          mountPath: /dev/shm
+        startupProbe:
+          httpGet:
+            path: /v2/health/ready
+            port: triton-http
+          periodSeconds: 10
+          failureThreshold: 90
+        readinessProbe:
+          httpGet:
+            path: /v2/health/ready
+            port: triton-http
+          periodSeconds: 10
+        resources:
+          {{- toYaml .Values.pipeline.resources | nindent 10 }}
+      containers:
+      - name: gateway
+        image: {{ .Values.registry }}/{{ .Values.gateway.image }}:{{ .Values.gateway.tag }}
+        env:
+        - name: HPS_TRITON_URL
+          value: localhost:8001
+        - name: HPS_VLM_URL
+          value: http://localhost:{{ .Values.vlm.port }}
+        - name: HPS_MAX_CONCURRENT_INFERENCE_REQUESTS
+          value: {{ .Values.gateway.maxConcurrentInferenceRequests | quote }}
+        - name: HPS_MAX_CONCURRENT_NON_INFERENCE_REQUESTS
+          value: {{ .Values.gateway.maxConcurrentNonInferenceRequests | quote }}
+        - name: HPS_INFERENCE_TIMEOUT
+          value: {{ .Values.gateway.inferenceTimeoutSeconds | quote }}
+        - name: HPS_UVICORN_WORKERS
+          value: {{ .Values.gateway.uvicornWorkers | quote }}
+        ports:
+        - name: http
+          containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: http
+          periodSeconds: 10
+          failureThreshold: 3
+        resources:
+          {{- toYaml .Values.gateway.resources | nindent 10 }}

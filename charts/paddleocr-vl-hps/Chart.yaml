@@ -1,0 +1,6 @@
+apiVersion: v2
+name: paddleocr-vl-hps
+description: PaddleOCR-VL high-performance serving. One pod, one GPU, three containers - FastAPI gateway, Triton running N pipeline instances, and vLLM serving the VLM.
+type: application
+version: 0.1.0
+appVersion: "3.6"

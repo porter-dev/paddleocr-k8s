@@ -1,0 +1,8 @@
+PaddleOCR-VL high-performance serving is starting: vLLM loads the model (up to
+{{ .Values.vlm.startupTimeoutSeconds }}s), Triton loads {{ .Values.pipeline.instances }} pipeline
+instances, then the gateway becomes ready.
+
+  kubectl --context <ctx> -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }} -w
+
+In-cluster URL (same /layout-parsing API as basic serving):
+  http://{{ include "paddleocr-vl-hps.name" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}

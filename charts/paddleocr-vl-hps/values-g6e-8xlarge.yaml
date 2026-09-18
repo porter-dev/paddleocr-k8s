@@ -1,0 +1,40 @@
+# g6e.8xlarge: one L40S (~45 GiB usable VRAM), 32 vCPU, 256 GiB RAM.
+# VRAM: vLLM at 0.25 = ~11 GiB (weights 1.8 + activation ~4.3 at 16384 batched tokens
+#       + CUDA graphs 0.3 + KV ~4.7 GiB ≈ 270k tokens; 6 instances × 64 in flight need ~135k)
+#       + 6 pipeline instances × 3.9 GiB = 23.4 GiB  →  ~34.5 GiB, ~10 GiB slack.
+# 16384 batched tokens: the workload is prefill-heavy (2k prompt tokens/page arriving in
+# waves), so a bigger per-step budget halves the steps needed to ingest a wave.
+# RAM:  vLLM ~3 (swap off) + 6 × 3.5 + Triton ~1 + gateway ~1 ≈ 26 GiB.
+# CPU:  vLLM ~1.2 + 6 × ~1.0 bursty + gateway ~0.5.
+gateway:
+  uvicornWorkers: 4
+  maxConcurrentInferenceRequests: 32
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+pipeline:
+  instances: 6
+  resources:
+    requests:
+      cpu: "6"
+      memory: 24Gi
+    limits:
+      memory: 34Gi
+vlm:
+  resources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+    limits:
+      memory: 8Gi
+      nvidia.com/gpu: 1
+  backendConfig:
+    gpu-memory-utilization: 0.25
+    max-num-batched-tokens: 16384
+    max-num-seqs: 512
+    mm-processor-cache-gb: 0
+    swap-space: 0
+shmSize: 4Gi

@@ -1,0 +1,39 @@
+# Replace the PaddleX vLLM wrapper (vLLM 0.10.2 + PaddleX's per-image, sync-heavy vision
+# encoder) with a stock vLLM image and its native PaddleOCR-VL implementation. Model weights
+# are pulled from Hugging Face into an emptyDir on first start. Flags follow the vLLM recipe.
+# The native 0.29.0 encoder still has per-image dispatch and scalar synchronization;
+# use a separately validated patched image when enabling encoder optimizations.
+vlm:
+  imageRef: docker.io/vllm/vllm-openai:v0.29.0
+  modelName: PaddleOCR-VL-1.6-0.9B
+  command: [vllm, serve]
+  args:
+  - PaddlePaddle/PaddleOCR-VL-1.6
+  - --served-model-name
+  - PaddleOCR-VL-1.6-0.9B
+  - --trust-remote-code
+  - --host
+  - 0.0.0.0
+  - --port
+  - "8118"
+  - --gpu-memory-utilization
+  - "0.25"
+  - --max-num-batched-tokens
+  - "16384"
+  - --max-num-seqs
+  - "512"
+  - --max-model-len
+  - "16384"
+  - --no-enable-prefix-caching
+  - --mm-processor-cache-gb
+  - "0"
+  - --limit-mm-per-prompt
+  - '{"image":1}'
+  resources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+    limits:
+      memory: 12Gi
+      nvidia.com/gpu: 1
+  startupTimeoutSeconds: 1200

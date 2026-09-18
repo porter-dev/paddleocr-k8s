@@ -1,0 +1,8 @@
+# Copy to .values.yaml (gitignored) and fill in your cluster. Everything not set here comes
+# from charts/paddleocr-vl-hps/values.yaml, which is sized for a g6.2xlarge (L4, 8 vCPU,
+# 32 GiB): 3 Triton instances and vLLM at 42% of the GPU. For a g6.xlarge start from
+# charts/paddleocr-vl-hps/values-g6xlarge.yaml instead (2 instances, smaller limits).
+registry: <account>.dkr.ecr.<region>.amazonaws.com
+nodeGroupId: <porter node group id whose nodes carry the GPU>
+instanceTypes:
+  - g6.2xlarge
